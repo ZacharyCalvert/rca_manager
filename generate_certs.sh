@@ -7,6 +7,21 @@ function usage {
    echo "This script is used to create sample SSL certificates, including support"
    echo "for intermediate certificate chains.  Do not treat this script as a means"
    echo "to generate your production SSL certificates."
+   echo "Usage: ./<script.sh> [clean|single|intermediate] [Domain]"
+   echo "   clean:        cleans (deletes) the ./.ssl directory"
+   echo "   single:       Generates a root certificate and a single site SSL cert"
+   echo "   intermediate: Generates a root certificate, an intermediate certificate, "
+   echo "                 and a site SSL cert."
+   echo "   Domain is your site comain such as mycompany.com.  The first portion"
+   echo "   of the domain (anything before the first .) is treated as your company"
+   exit 1
+}
+
+function exitOnFailure {
+    if [ $? -ne 0 ]; then
+        echo "$1"
+        exit 1
+    fi
 }
 
 function generateRootCertConf {

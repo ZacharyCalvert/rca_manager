@@ -3,6 +3,9 @@
 # This script is a monolithic single file for simple portability -> this is most
 # certainly not a good example of a clean bash script.
 
+# Constant variables for SSL generation
+KEYSTORE_PASS=changeit
+
 function usage {
    echo "This script is used to create sample SSL certificates, including support"
    echo "for intermediate certificate chains.  Do not treat this script as a means"
@@ -20,22 +23,32 @@ function usage {
 
 function exitOnFailure {
     if [ $? -ne 0 ]; then
+        if [ "$2" == "true" ]; then
+            #we are in the .ssl directory, pop directory out
+            popd > /dev/null 2>&1
+        fi
         echo "$1"
         exit 1
     fi
 }
+
+# Configuration local environment variables
+# SERVER
+# COMPANY
+# SUPPORT_EMAIL
+# DOMAIN
 
 function generateRootCertConf {
 cat <<EOF
 [ ca ]
 default_ca      = local_ca
 [ local_ca ]
-dir             = ./.ssl
-certificate     = $dir/cacert.pem
-database        = $dir/index.txt
-new_certs_dir   = $dir/signedcerts
-private_key     = $dir/private/cakey.pem
-serial          = $dir/serial
+dir             = ./rca
+certificate     = rca/cacert.pem
+database        = rca/index.txt
+new_certs_dir   = rca/signedcerts
+private_key     = rca/private/cakey.pem
+serial          = rca/serial
 default_crl_days        = 730
 default_days            = 1825
 default_md              = sha1
@@ -54,15 +67,15 @@ authorityKeyIdentifier  = keyid,issuer
 basicConstraints        = CA:true
 [ req ]
 default_bits    = 2048
-default_keyfile = ./ssl/private/cakey.pem
+default_keyfile = ./rca/private/cakey.pem
 default_md      = sha1
 prompt                  = no
 distinguished_name      = root_ca_distinguished_name
 [ root_ca_distinguished_name ]
-commonName              = root-ssl.$DOMAIN
+commonName              = root-rca.$DOMAIN
 stateOrProvinceName     = TX
 countryName             = US
-emailAddress            = IT_SSL@$DOMAIN
+emailAddress            = $SUPPORT_EMAIL
 organizationName        = $COMPANY
 organizationalUnitName  = dev
 [ root_ca_extensions ]
@@ -82,7 +95,7 @@ x509_extensions         = local_extensions
 commonName              = $SERVER
 stateOrProvinceName     = Texas
 countryName             = US
-emailAddress            = test@$DOMAIN
+emailAddress            = $SUPPORT_EMAIL
 organizationName        = $COMPANY
 organizationalUnitName  = dev
 
@@ -98,37 +111,96 @@ function testOpenSsl {
 }
 
 function validateInput {
-    if [ "" == "$1" ] || [ "" == "$2" ] ; then
+    if [ "" == "$1" ]; then
         usage
     fi
     if [ "single" != "$1" ] && [ "intermediate" != "$1" ] && [ "clean" != "$1" ] ; then
         usage
     fi
-    export SERVER=$2
-    export COMPANY=`echo "$2" | awk -F '.' '{print $(NF-1)}'`
-    export TLD=`echo "$2" | awk -F '.' '{print $(NF)}'`
-    export DOMAIN=${COMPANY}.${TLD}
-    export SUPPORT_EMAIL="ssl-admin@$DOMAIN"
 
-    if [ "" == "$COMPANY" ]; then
-        usage
+    if [ "clean" != "$1" ]; then
+        if [ "" == "$2" ]; then
+            usage
+        fi
+        export SERVER=$2
+        export COMPANY=`echo "$2" | awk -F '.' '{print $(NF-1)}'`
+        export TLD=`echo "$2" | awk -F '.' '{print $(NF)}'`
+        export DOMAIN=${COMPANY}.${TLD}
+        export SUPPORT_EMAIL="ssl-admin@$DOMAIN"
+
+        if [ "" == "$COMPANY" ]; then
+            usage
+        fi
+        echo "Company domain: $DOMAIN"
+        echo "Server target: $SERVER"
+        echo "Company: $COMPANY"
+        echo "Support contact email: $SUPPORT_EMAIL"
     fi
-    echo "Server target: $SERVER"
-    echo "Company: $COMPANY"
-    echo "Support contact email: $SUPPORT_EMAIL"
+}
+
+function createFolderIfNotExist {
+    if [ ! -d "$1" ]; then
+        mkdir -p "$1"
+        exitOnFailure "Could not create local .ssl directory"
+    fi
 }
 
 function createSslFolderIfNotExist {
-  if [ ! -d "./.ssl" ]; then
-    mkdir ./.ssl
-    exitOnFailure "Could not create local .ssl directory"
-  fi
+    createFolderIfNotExist "./.ssl"
+}
+
+function createRootCertIfNotExist {
+    if [ ! -e ./root.cnf ]; then
+        generateRootCertConf > ./root.cnf
+        exitOnFailure "Couldn't create root configuration" "true"
+        # we know we have permissions, create the serial and index files
+        mkdir -p "./rca/private"
+        exitOnFailure "Couldn't create root configuration folder" "true"
+        date +%s > ./rca/serial
+        touch ./rca/index.txt
+        export OPENSSL_CONF=`pwd`/root.cnf
+        echo "$KEYSTORE_PASS" > ./pass.txt
+
+        # Create our root certificate authority.
+        # The key will go where the root.cnf directs it, and the public cert
+        # will go to cacert.pem
+        openssl req -x509 -newkey rsa:2048 -passout file:./pass.txt -out ./cacert.pem -outform PEM -days 1825
+        exitOnFailure "Couldn't generate Root Certificate Authority" "true"
+    else
+        echo "Using existing root certificate configuration"
+    fi
+}
+
+function createSingleConfiguration {
+    # always stomp, as this is a new signature
+    generateSingleCertConf > ./server.cnf
+    exitOnFailure "Couldn't create server configuration" "true"
+}
+
+function executeProcess {
+    if [ "clean" == "$1" ]; then
+        rm -rf ./.ssl
+        exitOnFailure "Couldn't delete .ssl directory"
+        echo "Removed .ssl directory"
+    elif [ "single" == "$1" ]; then
+        pushd ./.ssl > /dev/null 2>&1
+        exitOnFailure "Could not read ./.ssl directory"
+        createRootCertIfNotExist
+        createSingleConfiguration
+        popd > /dev/null 2>&1
+    elif [ "intermediate" == "$1" ]; then
+        pushd ./.ssl > /dev/null 2>&1
+        exitOnFailure "Could not read ./.ssl directory"
+        createRootCertIfNotExist
+        popd > /dev/null 2>&1
+    else
+        echo "Did not understand command $1"
+        exit 1
+    fi
 }
 
 testOpenSsl
 validateInput $1 $2
 createSslFolderIfNotExist
+executeProcess $1
 exit 0
-
-generateRootCertConf > ./.ssl/root.cnf
-generateSingleCertConf > ./.ssl/server.cnf

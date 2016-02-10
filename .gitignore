@@ -1,2 +1,4 @@
 .ssl
 .DS_Store
+*.pem
+*.crt

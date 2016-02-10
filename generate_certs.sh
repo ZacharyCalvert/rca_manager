@@ -23,7 +23,7 @@ function usage {
 
 function exitOnFailure {
     if [ $? -ne 0 ]; then
-        if [ "$2" == "true" ]; then
+        if $2 ; then
             #we are in the .ssl directory, pop directory out
             popd > /dev/null 2>&1
         fi
@@ -81,6 +81,13 @@ organizationalUnitName  = dev
 [ root_ca_extensions ]
 extendedKeyUsage        = serverAuth,clientAuth,codeSigning,msCodeInd,msCodeCom
 basicConstraints        = CA:true
+EOF
+}
+
+function generateSerialOutput {
+cat <<EOF
+01
+
 EOF
 }
 
@@ -152,11 +159,12 @@ function createSslFolderIfNotExist {
 function createRootCertIfNotExist {
     if [ ! -e ./root.cnf ]; then
         generateRootCertConf > ./root.cnf
-        exitOnFailure "Couldn't create root configuration" "true"
+        exitOnFailure "Couldn't create root configuration" true
         # we know we have permissions, create the serial and index files
         mkdir -p "./rca/private"
-        exitOnFailure "Couldn't create root configuration folder" "true"
-        date +%s > ./rca/serial
+        mkdir -p "./rca/signedcerts"
+        exitOnFailure "Couldn't create root configuration folder" true
+        generateSerialOutput > ./rca/serial
         touch ./rca/index.txt
         export OPENSSL_CONF=`pwd`/root.cnf
         echo "$KEYSTORE_PASS" > ./pass.txt
@@ -164,8 +172,8 @@ function createRootCertIfNotExist {
         # Create our root certificate authority.
         # The key will go where the root.cnf directs it, and the public cert
         # will go to cacert.pem
-        openssl req -x509 -newkey rsa:2048 -passout file:./pass.txt -out ./cacert.pem -outform PEM -days 1825
-        exitOnFailure "Couldn't generate Root Certificate Authority" "true"
+        openssl req -x509 -newkey rsa:2048 -passout file:./pass.txt -out ./rca/cacert.pem -outform PEM -days 1825 > /dev/null 2>&1
+        exitOnFailure "Couldn't generate Root Certificate Authority" true
     else
         echo "Using existing root certificate configuration"
     fi
@@ -173,8 +181,41 @@ function createRootCertIfNotExist {
 
 function createSingleConfiguration {
     # always stomp, as this is a new signature
+    export OPENSSL_CONF=`pwd`/server.cnf
     generateSingleCertConf > ./server.cnf
-    exitOnFailure "Couldn't create server configuration" "true"
+    exitOnFailure "Couldn't create server configuration" true
+}
+
+function processSingleSignature {
+    openssl req -newkey rsa:1024 -passout file:./pass.txt -keyout ./tempkey.pem -keyform PEM -out ./tempreq.pem -outform PEM > /dev/null 2>&1
+    exitOnFailure "Couldn't generate signature request" true
+
+    # Switch back to root configuration
+    export OPENSSL_CONF=`pwd`/root.cnf
+
+    # Sign the request; signature will be based off of the key location which is configured inside the root.cnf
+    openssl ca -batch -passin file:./pass.txt -in ./tempreq.pem -out ./server_crt.pem > /dev/null 2>&1
+    exitOnFailure "Could not sign the server signature request" true
+
+    # Strip meta information from our request, leaving only the certificate
+    openssl x509 -in ./server_crt.pem -out ./server_crt.pem > /dev/null 2>&1
+    exitOnFailure "Could not clean up the signature" true
+
+    # Copy the root certificate authority certificate to the output directory
+    cp ./rca/cacert.pem ../root_ca-single.crt
+    exitOnFailure "Could not copy the root certificate" true
+
+    # strip the server key's password
+    openssl rsa -passin file:./pass.txt < ./tempkey.pem > ./server_key.pem > /dev/null 2>&1
+    exitOnFailure "Could not strip the server key password" true
+
+    # The server key and certificate appended into a file
+    cat ./server_crt.pem ./server_key.pem > ../server.pem
+    exitOnFailure "Could not build the concatenated server certificate" true
+
+    # Transfer the server certificate to the CRT format (easy installation in Windows)
+    mv ./server_crt.pem ../server_crt.crt
+    exitOnFailure "Could not move server certificate" true
 }
 
 function executeProcess {
@@ -187,6 +228,7 @@ function executeProcess {
         exitOnFailure "Could not read ./.ssl directory"
         createRootCertIfNotExist
         createSingleConfiguration
+        processSingleSignature
         popd > /dev/null 2>&1
     elif [ "intermediate" == "$1" ]; then
         pushd ./.ssl > /dev/null 2>&1

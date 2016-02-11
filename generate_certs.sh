@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# Developed by Zach Calvert, 2016
+
 # This script is a monolithic single file for simple portability -> this is most
 # certainly not a good example of a clean bash script.
 
@@ -202,20 +204,23 @@ function processSingleSignature {
     exitOnFailure "Could not clean up the signature" true
 
     # Copy the root certificate authority certificate to the output directory
-    cp ./rca/cacert.pem ../root_ca-single.crt
+    cp -f ./rca/cacert.pem ../root_certificate.crt
     exitOnFailure "Could not copy the root certificate" true
+    echo "Root certificate CRT (aka PEM), format X.509 v3: root_certificate.crt"
 
     # strip the server key's password
-    openssl rsa -passin file:./pass.txt < ./tempkey.pem > ./server_key.pem > /dev/null 2>&1
+    openssl rsa -passin file:./pass.txt < ./tempkey.pem > ./server_key.pem
     exitOnFailure "Could not strip the server key password" true
 
     # The server key and certificate appended into a file
-    cat ./server_crt.pem ./server_key.pem > ../server.pem
-    exitOnFailure "Could not build the concatenated server certificate" true
+    cat ./server_crt.pem ./server_key.pem > ../$SERVER.pem
+    exitOnFailure "Could not build the concatenated server certificate to $SERVER.pem" true
+    echo "Server pem file (X.509 v3): $SERVER.pem"
 
-    # Transfer the server certificate to the CRT format (easy installation in Windows)
-    mv ./server_crt.pem ../server_crt.crt
-    exitOnFailure "Could not move server certificate" true
+    # Transfer the server certificate to the DER format
+    openssl x509 -in ../$SERVER.pem -outform der -out ../$SERVER.der
+    exitOnFailure "Could not create DER format file $SERVER.der" true
+    echo "Server DER file (Common binary CRT): $SERVER.der"
 }
 
 function executeProcess {

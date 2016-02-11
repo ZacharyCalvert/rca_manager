@@ -115,6 +115,52 @@ basicConstraints        = CA:true
 EOF
 }
 
+function generateIntermediateCertConf {
+cat <<EOF
+[ ca ]
+default_ca      = local_ca
+[ local_ca ]
+dir             = ./intermediate
+certificate     = $dir/cacert.pem
+database        = $dir/index.txt
+new_certs_dir   = $dir/signedcerts
+private_key     = $dir/private/cakey.pem
+serial          = $dir/serial
+default_crl_days        = 730
+default_days            = 1825
+default_md              = sha1
+policy          = local_ca_policy
+[ local_ca_policy ]
+commonName              = supplied
+stateOrProvinceName     = supplied
+countryName             = supplied
+emailAddress            = supplied
+organizationName        = supplied
+organizationalUnitName  = supplied
+[ local_ca_extensions ]
+extendedKeyUsage        = serverAuth,clientAuth,codeSigning,msCodeInd,msCodeCom
+subjectKeyIdentifier    = hash
+authorityKeyIdentifier  = keyid,issuer
+basicConstraints        = CA:true
+[ req ]
+default_bits    = 2048
+default_keyfile = ./private/cakey.pem
+default_md      = sha1
+prompt                  = no
+distinguished_name      = root_ca_distinguished_name
+[ root_ca_distinguished_name ]
+commonName              = intermediate-ssl.$DOMAIN
+stateOrProvinceName     = Texas
+countryName             = US
+emailAddress            = $SUPPORT_EMAIL
+organizationName        = $COMPANY
+organizationalUnitName  = dev
+[ root_ca_extensions ]
+extendedKeyUsage        = serverAuth,clientAuth,codeSigning,msCodeInd,msCodeCom
+basicConstraints        = CA:true
+EOF
+}
+
 function testOpenSsl {
     command -v openssl >/dev/null 2>&1 || { echo "Openssl is not on the path.  Please install openssl.  Aborting." >&2; exit 1; }
 }
@@ -156,6 +202,36 @@ function createFolderIfNotExist {
 
 function createSslFolderIfNotExist {
     createFolderIfNotExist "./.ssl"
+}
+
+function generateIntermediateCertIfNotExist {
+    if [ ! -e ./intermediate.cnf ]; then
+        generateIntermediateCertConf > ./intermediate.cnf
+        exitOnFailure "Couldn't create intermedaite certificate"
+
+        # we know we have permissions, create the serial and index files
+        mkdir -p "./intermediate/private"
+        mkdir -p "./intermediate/signedcerts"
+        exitOnFailure "Couldn't create intermediate configuration folder" true
+        generateSerialOutput > ./intermediate/serial
+        touch ./intermediate/index.txt
+        export OPENSSL_CONF=`pwd`/intermediate.cnf
+        echo "$KEYSTORE_PASS" > ./pass.txt
+
+        export OPENSSL_CONF=./intermediate.cnf
+        openssl genrsa -out ./intermediate/private/cakey.pem 2048 > /dev/null 2>&1
+        exitOnFailure "Couldn't create intermediate key" true
+
+        openssl req -new -sha1 -days 730 -key ./intermediate/private/cakey.pem -out ./intermediate/intermediate.csr > /dev/null 2>&1
+        exitOnFailure "Couldn't create intermediate file signature request" true
+
+        export OPENSSL_CONF=./root.cnf
+        openssl ca -batch -passin file:./pass.txt -days 730 -out ./intermediate/intermediate.pem -in ./intermediate/intermediate.csr -keyfile ./rca/private/cakey.pem -cert ./rca/cacert.pem > /dev/null 2>&1
+        exitOnFailure "Couldn't sign intermediate file signature request" true
+
+    else
+        echo "Using existing intermediate certificate signature authority"
+    fi
 }
 
 function createRootCertIfNotExist {
@@ -239,6 +315,7 @@ function executeProcess {
         pushd ./.ssl > /dev/null 2>&1
         exitOnFailure "Could not read ./.ssl directory"
         createRootCertIfNotExist
+        generateIntermediateCertIfNotExist
         popd > /dev/null 2>&1
     else
         echo "Did not understand command $1"
@@ -250,4 +327,3 @@ testOpenSsl
 validateInput $1 $2
 createSslFolderIfNotExist
 executeProcess $1
-exit 0

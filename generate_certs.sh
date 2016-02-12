@@ -121,11 +121,11 @@ cat <<EOF
 default_ca      = local_ca
 [ local_ca ]
 dir             = ./intermediate
-certificate     = $dir/cacert.pem
-database        = $dir/index.txt
-new_certs_dir   = $dir/signedcerts
-private_key     = $dir/private/cakey.pem
-serial          = $dir/serial
+certificate     = ./intermediate/intermediate.pem
+database        = ./intermediate/index.txt
+new_certs_dir   = ./intermediate/signedcerts
+private_key     = ./intermediate/private/cakey.pem
+serial          = ./intermediate/serial
 default_crl_days        = 730
 default_days            = 1825
 default_md              = sha1
@@ -264,6 +264,48 @@ function createSingleConfiguration {
     exitOnFailure "Couldn't create server configuration" true
 }
 
+function processIntermediateSignature {
+    openssl req -newkey rsa:1024 -passout file:./pass.txt -keyout ./tempkey.pem -keyform PEM -out ./tempreq.pem -outform PEM > /dev/null 2>&1
+    exitOnFailure "Couldn't generate signature request" true
+
+    # Sign with intermediate certificate
+    export OPENSSL_CONF=`pwd`/intermediate.cnf
+
+    # Sign the request; signature will be based off of the key location which is configured inside the intermediate.cnf
+    openssl ca -batch -passin file:./pass.txt -in ./tempreq.pem -out ./server_crt.pem > /dev/null 2>&1
+    exitOnFailure "Could not sign the server signature request with intermediate private key" true
+
+    # Strip meta information from our request, leaving only the certificate
+    openssl x509 -in ./server_crt.pem -out ./server_crt.pem > /dev/null 2>&1
+    exitOnFailure "Could not clean up the signature meta information" true
+
+    # Copy the root certificate authority certificate to the output directory
+    cp -f ./rca/cacert.pem ../root_certificate.crt
+    exitOnFailure "Could not copy the root certificate" true
+    echo "Root certificate CRT (aka PEM), format X.509 v3: root_certificate.crt"
+
+    cat ./tempkey.pem > ./server_key.pem
+    exitOnFailure "Could not copy the server key file" true
+
+    # Transfer the server certificate to the CRT format (easy installation in Windows)
+    cp ./server_crt.pem ../server_crt.crt
+    exitOnFailure "Could not copy the server pem file to CRT" true
+
+    # Copy output for intermediate pem
+    openssl x509 -in ./intermediate/intermediate.pem -out ./intermediate.crt_donotuse > /dev/null 2>&1
+    exitOnFailure "Could not clean up the intermediate pem file meta data" true
+
+    # The server key and certificate appended into a single file
+    cat ../server_crt.crt ./intermediate.crt_donotuse ./server_key.pem > ../$SERVER.pem
+    exitOnFailure "Could not create the server pem file" true
+    echo "Server pem file (X.509 v3): $SERVER.pem"
+
+    # Transfer the server certificate to the DER format
+    openssl x509 -in ../$SERVER.pem -outform der -out ../$SERVER.der
+    exitOnFailure "Could not create DER format file $SERVER.der" true
+    echo "Server DER file (Common binary CRT): $SERVER.der"
+}
+
 function processSingleSignature {
     openssl req -newkey rsa:1024 -passout file:./pass.txt -keyout ./tempkey.pem -keyform PEM -out ./tempreq.pem -outform PEM > /dev/null 2>&1
     exitOnFailure "Couldn't generate signature request" true
@@ -316,6 +358,8 @@ function executeProcess {
         exitOnFailure "Could not read ./.ssl directory"
         createRootCertIfNotExist
         generateIntermediateCertIfNotExist
+        createSingleConfiguration
+        processIntermediateSignature
         popd > /dev/null 2>&1
     else
         echo "Did not understand command $1"
